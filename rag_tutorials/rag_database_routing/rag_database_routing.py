@@ -8,6 +8,9 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.vectorstores import Qdrant
 from langchain_openai import OpenAIEmbeddings
 from langchain_openai import ChatOpenAI
+from langchain_core.caches import BaseCache
+from langchain_core.callbacks import Callbacks
+from langchain_core.language_models import BaseLanguageModel
 import tempfile
 from agno.agent import Agent
 from agno.models.openai import OpenAIChat
@@ -21,6 +24,13 @@ from langchain_core.language_models import BaseLanguageModel
 from langchain.prompts import ChatPromptTemplate
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
+
+# Fix for Pydantic v2 compatibility with LangChain
+try:
+    ChatOpenAI.model_rebuild()
+except Exception:
+    # If model_rebuild fails, try alternative approach
+    pass
 
 def init_session_state():
     """Initialize session state variables"""
@@ -75,7 +85,21 @@ def initialize_models():
         
         os.environ["OPENAI_API_KEY"] = st.session_state.openai_api_key
         st.session_state.embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-        st.session_state.llm = ChatOpenAI(temperature=0)
+        
+        # Initialize ChatOpenAI with proper error handling for Pydantic v2
+        try:
+            st.session_state.llm = ChatOpenAI(temperature=0)
+        except Exception as e:
+            # st.error(f"Failed to initialize ChatOpenAI: {str(e)}")
+            # Try alternative initialization
+            try:
+                from langchain_openai import ChatOpenAI
+                ChatOpenAI.model_rebuild()
+                st.session_state.llm = ChatOpenAI(temperature=0)
+                # st.info("success")
+            except Exception as e2:
+                st.error(f"Alternative initialization also failed: {str(e2)}")
+                return False
         
         try:
             client = QdrantClient(
@@ -141,15 +165,14 @@ def create_routing_agent() -> Agent:
             api_key=st.session_state.openai_api_key
         ),
         tools=[],
-        description="""You are a query routing expert. Your only job is to analyze questions and determine which database they should be routed to.
-        You must respond with exactly one of these three options: 'products', 'support', or 'finance'. The user's question is: {question}""",
+        description="""You are a query routing expert. Your only job is to analyze questions and determine which database they should be routed to. The user's question is: {question}""",
         instructions=[
             "Follow these rules strictly:",
             "1. For questions about products, features, specifications, or item details, or product manuals → return 'products'",
             "2. For questions about help, guidance, troubleshooting, or customer service, FAQ, or guides → return 'support'",
             "3. For questions about costs, revenue, pricing, or financial data, or financial reports and investments → return 'finance'",
-            "4. Return ONLY the database name, no other text or explanation",
-            "5. If you're not confident about the routing, return an empty response"
+            "4. If you are not sure about the question, return an empty response",
+            "5. If you are sure about the question, Return exactly one of these three options: 'products', 'support', or 'finance', no other text or explanation"
         ],
         markdown=False,
         show_tool_calls=False
@@ -324,6 +347,9 @@ def main():
         if (st.session_state.openai_api_key and 
             st.session_state.qdrant_url and 
             st.session_state.qdrant_api_key):
+            # st.info(st.session_state.openai_api_key)
+            # st.info(st.session_state.qdrant_url)
+            # st.info(st.session_state.qdrant_api_key)
             if initialize_models():
                 st.success("Connected to OpenAI and Qdrant successfully!")
             else:
